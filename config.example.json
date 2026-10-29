@@ -1,0 +1,13 @@
+{
+  "store_name": "Κατάστημα Περιστέρι",
+  "store_id": "peristeri",
+  "ics_url": "https://calendar.google.com/calendar/ical/KENTRIKO/private-XXX/basic.ics",
+  "ics_urls": [
+    "https://calendar.google.com/calendar/ical/ERGAZOMENOI/private-YYY/basic.ics"
+  ],
+  "poll_seconds": 30,
+  "minutes_before": 0,
+  "show_missed_max_minutes": 15,
+  "sound": true,
+  "sound_seconds": 30
+}

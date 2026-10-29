@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 164 314">
+  <!-- Inno Setup WizardImageFile (164x314, 2x = 328x628) -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#F8C52C"/>
+      <stop offset="1" stop-color="#F0A500"/>
+    </linearGradient>
+    <!-- same gradient in the bell group's local coordinates, so the ring looks like a cut-out -->
+    <linearGradient id="ring" gradientUnits="userSpaceOnUse" x1="0" y1="-64" x2="0" y2="564">
+      <stop offset="0" stop-color="#F8C52C"/>
+      <stop offset="1" stop-color="#F0A500"/>
+    </linearGradient>
+  </defs>
+  <rect width="164" height="314" fill="url(#bg)"/>
+  <!-- bell (same artwork as icon.svg, without the square) -->
+  <g transform="translate(82 96) scale(0.5) translate(-128 -128)">
+    <g fill="#1A1A1A">
+      <circle cx="128" cy="50" r="14"/>
+      <path d="M128 56C84 56 66 90 66 126v36l-10 20h144l-10-20v-36c0-36-18-70-62-70z"/>
+      <rect x="44" y="172" width="168" height="20" rx="10"/>
+      <path d="M104 198h48a24 24 0 0 1-48 0z"/>
+    </g>
+    <circle cx="190" cy="66" r="34" fill="#E53935" stroke="url(#ring)" stroke-width="14"/>
+  </g>
+  <!-- popup card like the reminder window -->
+  <rect x="16" y="190" width="136" height="100" rx="10" fill="#000" opacity="0.12"/>
+  <rect x="13" y="186" width="136" height="100" rx="10" fill="#1A1A1A"/>
+  <rect x="25" y="198" width="38" height="5" rx="2.5" fill="#F5C84B"/>
+  <rect x="25" y="211" width="104" height="9" rx="4.5" fill="#FFFFFF"/>
+  <rect x="25" y="225" width="72" height="9" rx="4.5" fill="#FFFFFF"/>
+  <rect x="25" y="240" width="50" height="5" rx="2.5" fill="#8A8A8A"/>
+  <rect x="25" y="258" width="46" height="16" rx="4" fill="#F5C84B"/>
+  <rect x="77" y="258" width="46" height="16" rx="4" fill="#3D3D3D"/>
+</svg>

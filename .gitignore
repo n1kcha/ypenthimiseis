@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+build/
+dist/
+*.spec
+installer/Output/
+installer/icon.ico
+config.json
+state.json
+chime.wav
+app.log
+app.old.log
+*.tmp

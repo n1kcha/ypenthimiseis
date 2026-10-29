@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <!-- 1: Bell + notification dot, brand amber/black -->
+  <rect x="8" y="8" width="240" height="240" rx="56" fill="#F5B400"/>
+  <g fill="#1A1A1A">
+    <circle cx="128" cy="50" r="14"/>
+    <path d="M128 56C84 56 66 90 66 126v36l-10 20h144l-10-20v-36c0-36-18-70-62-70z"/>
+    <rect x="44" y="172" width="168" height="20" rx="10"/>
+    <path d="M104 198h48a24 24 0 0 1-48 0z"/>
+  </g>
+  <circle cx="190" cy="66" r="34" fill="#E53935" stroke="#F5B400" stroke-width="14"/>
+</svg>

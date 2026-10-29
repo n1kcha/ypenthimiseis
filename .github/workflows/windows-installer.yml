@@ -1,0 +1,73 @@
+name: Windows installer
+
+on:
+  push:
+    branches: [main, windows-installer]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt pyinstaller pytest pyflakes
+
+      - name: Lint and unit tests
+        run: |
+          python -m pyflakes app.py installer tests
+          python -m pytest -q tests
+
+      - name: Version
+        run: |
+          if ("${{ github.ref_type }}" -eq "tag") { $v = "${{ github.ref_name }}".TrimStart("v") }
+          else { $v = "1.0.${{ github.run_number }}" }
+          "APP_VERSION=$v" >> $env:GITHUB_ENV
+          Write-Host "Version $v"
+
+      - name: Install Inno Setup
+        run: |
+          choco install innosetup -y --no-progress
+          if ($LASTEXITCODE -ne 0) { throw "choco install innosetup failed" }
+
+      - name: Build exe and installer
+        run: ./installer/build.ps1 -Version $env:APP_VERSION
+
+      - name: Smoke tests (exe + silent install/upgrade/uninstall)
+        timeout-minutes: 10
+        run: ./installer/ci_smoke.ps1
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Ypenthimiseis-Setup
+          path: installer/Output/Ypenthimiseis-Setup.exe
+          if-no-files-found: error
+
+      - name: Attach to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "${{ github.ref_name }}" 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create "${{ github.ref_name }}" installer/Output/Ypenthimiseis-Setup.exe --title "Υπενθυμίσεις ${{ github.ref_name }}" --notes "Κατεβάστε το Ypenthimiseis-Setup.exe και τρέξτε το. Επίσημη σελίδα: https://localbits.gr/ypenthimiseis/"
+          } else {
+            gh release upload "${{ github.ref_name }}" installer/Output/Ypenthimiseis-Setup.exe --clobber
+          }
