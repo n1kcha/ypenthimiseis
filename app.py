@@ -518,6 +518,11 @@ class ReminderEngine:
 
 AMBER = "#F5B400"
 AMBER_HOVER = "#FFC51F"
+
+# Πού βρίσκεται ο σύνδεσμος στο σημερινό Google Calendar (σε υπολογιστή).
+CALENDAR_HELP = ("Google Calendar σε υπολογιστή: γρανάζι ⚙ πάνω δεξιά → «Ρυθμίσεις» →\n"
+                 "αριστερά πάτα το όνομα του ημερολογίου → «Ενσωμάτωση ημερολογίου» →\n"
+                 "αντέγραψε τη «Μυστική διεύθυνση σε μορφή iCal» (τελειώνει σε .ics).")
 AMBER_SOFT = "#FFD452"
 INK = "#1A1A1A"
 CREAM = "#FBF7EC"
@@ -1226,7 +1231,8 @@ def check_ics(url: str) -> tuple[bool, str]:
         n = sum(1 for comp in cal.walk() if comp.name == "VEVENT")
     except Exception:
         return False, ("Η διεύθυνση δεν είναι ημερολόγιο ICS. Στο Google Calendar χρησιμοποιήστε "
-                       "τη «Μυστική διεύθυνση σε μορφή iCal».")
+                       "τη «Μυστική διεύθυνση σε μορφή iCal» (⚙ Ρυθμίσεις → όνομα ημερολογίου → "
+                       "«Ενσωμάτωση ημερολογίου»).")
     return True, f"Εντάξει — βρέθηκαν {n} γεγονότα."
 
 
@@ -1408,8 +1414,8 @@ class CalendarDialog:
         body = ttk.Frame(d, padding=(24, 16, 24, 10))
         body.pack(fill="both", expand=True)
         ttk.Label(body, text="Σύνδεσμος ICS", style="Section.TLabel").pack(anchor="w")
-        ttk.Label(body, text="Google Calendar: Ρυθμίσεις ημερολογίου → «Μυστική διεύθυνση σε μορφή iCal».",
-                  style="Muted.TLabel").pack(anchor="w", pady=(0, 6))
+        ttk.Label(body, text=CALENDAR_HELP, style="Muted.TLabel",
+                  justify="left").pack(anchor="w", pady=(0, 6))
         box = tk.Frame(body, bg=FIELD_BORDER, padx=1, pady=1)
         box.pack(fill="x")
         self.t_url = tk.Text(box, height=4, width=60, wrap="char", font=f(11), relief="flat",

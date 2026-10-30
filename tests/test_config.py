@@ -591,3 +591,14 @@ def test_popup_desc_fixup_when_real_text_taller(monkeypatch):
         ov._close()
         ov.pump()
 
+
+
+def test_calendar_help_uses_current_google_path():
+    """Οδηγίες για το σημερινό Google Calendar: γρανάζι → Ρυθμίσεις → όνομα ημερολογίου →
+    Ενσωμάτωση ημερολογίου. Όχι «τρεις τελείες» / «Ρυθμίσεις και κοινή χρήση»."""
+    h = app.CALENDAR_HELP
+    for part in ("⚙", "«Ρυθμίσεις»", "όνομα του ημερολογίου", "«Ενσωμάτωση ημερολογίου»",
+                 "«Μυστική διεύθυνση σε μορφή iCal»", ".ics"):
+        assert part in h
+    src = open(app.__file__, encoding="utf-8").read()
+    assert "τρεις τελείες" not in src and "Ρυθμίσεις και κοινή χρήση" not in src
