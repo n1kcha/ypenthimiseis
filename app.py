@@ -1771,10 +1771,32 @@ def settings_command() -> list[str]:
     return [str(exe), str(Path(__file__).resolve()), "--settings"]
 
 
+def focus_settings_window() -> None:
+    """Αν οι ρυθμίσεις είναι ήδη ανοιχτές, φέρνει το παράθυρό τους μπροστά (Windows)."""
+    if not sys.platform.startswith("win"):
+        return
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        u32 = ctypes.windll.user32
+        u32.FindWindowW.restype = wintypes.HWND
+        u32.FindWindowW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR]
+        hwnd = u32.FindWindowW(None, f"{APP_NAME} — Ρυθμίσεις")
+        if not hwnd:
+            return
+        if u32.IsIconic(hwnd):
+            u32.ShowWindow(hwnd, 9)  # SW_RESTORE
+        u32.SetForegroundWindow(hwnd)
+    except Exception as e:
+        log(f"settings focus: {e!r}")
+
+
 def open_settings_async(engine: ReminderEngine, on_done=None) -> None:
     """Ανοίγει τις ρυθμίσεις σε δική τους διεργασία (για να μη μπλέκει το tkinter με
     το tray/popup) και μετά ξαναφορτώνει το config χωρίς επανεκκίνηση."""
     if getattr(engine, "_settings_open", False):
+        focus_settings_window()
         return
     engine._settings_open = True
 
@@ -1927,7 +1949,7 @@ def setup_tray(engine: ReminderEngine):
     menu = pystray.Menu(
         pystray.MenuItem(lambda item: engine.cfg.get("store_name", APP_NAME), None, enabled=False),
         pystray.MenuItem("Συγχρονισμός τώρα", sync_now),
-        pystray.MenuItem("Ρυθμίσεις", settings),
+        pystray.MenuItem("Ρυθμίσεις", settings, default=True),  # αριστερό κλικ στο εικονίδιο
         pystray.MenuItem("Άνοιγμα Google Calendar", open_calendar),
         pystray.MenuItem("Έξοδος", exit_app),
     )
