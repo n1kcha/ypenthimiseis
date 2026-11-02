@@ -58,6 +58,7 @@ try {
     $log1 = Join-Path $d1 "app.log"
     if ((Test-Path $log1) -and (Select-String -Path $log1 -Pattern "loop:" -Quiet)) { Get-Content $log1; Fail "popup raised an error (see app.log)" }
     if (-not ((Test-Path $log1) -and (Select-String -Path $log1 -Pattern "start \(pid" -Quiet))) { Fail "app.log missing or without start line" }
+    if (-not (Select-String -Path $log1 -Pattern "net: tls=truststore" -Quiet)) { Get-Content $log1; Fail "truststore (Windows certificate store) not active in the exe" }
     if (Select-String -Path $log1 -Pattern "fatal exception|unhandled|tk callback" -Quiet) { Get-Content $log1; Fail "crash/unhandled error logged in app.log" }
     if (-not (Get-Process Ypenthimiseis -ErrorAction SilentlyContinue)) { Fail "exe exited" }
     Write-Host "OK: event fetched, popup + chime started, data in LOCALAPPDATA"

@@ -24,6 +24,8 @@ python -m PyInstaller --noconfirm --clean --windowed `
     --collect-all recurring_ical_events `
     --collect-all icalendar `
     --collect-all x_wr_timezone `
+    --hidden-import truststore `
+    --collect-submodules truststore `
     --hidden-import pystray._win32 `
     --hidden-import PIL.ImageTk `
     --hidden-import PIL._tkinter_finder `
