@@ -204,17 +204,45 @@ def save_json(path: Path, data) -> None:
     tmp.replace(path)
 
 
+_INVISIBLE = dict.fromkeys(map(ord, "\ufeff\u200b\u200c\u200d\u2060\u00ad"), None)
+_QUOTES = "\"'`«»“”„‘’‚<>"
+
+
+def clean_ics_url(text: str) -> str:
+    """Καθαρίζει έναν σύνδεσμο ICS όπως έρχεται από επικόλληση ή παλιό config.json.
+
+    - κενά, tab, αλλαγές γραμμής (και \\r\\n γραμμένα ως κείμενο), NBSP
+    - BOM / αόρατοι χαρακτήρες (zero-width), εισαγωγικά «» "" '' <> γύρω από τη διεύθυνση
+    - webcal:// και webcals:// -> https://
+    """
+    u = str(text or "").translate(_INVISIBLE)
+    u = u.replace("\\r", " ").replace("\\n", " ").replace("\\t", " ")
+    u = "".join(u.split())
+    prev = None
+    while u and u != prev:
+        prev = u
+        u = u.strip(_QUOTES).rstrip(",;")
+    low = u.lower()
+    for pre in ("webcals://", "webcal://"):
+        if low.startswith(pre):
+            u = "https://" + u[len(pre):]
+            break
+    return u
+
+
 def calendar_urls(cfg: dict) -> list[str]:
     urls = []
     extra = cfg.get("ics_urls") or []
     if isinstance(extra, str):
-        extra = [extra]
+        # παλιά config: ics_urls ως κείμενο, ένας σύνδεσμος ανά γραμμή
+        extra = extra.splitlines()
     for u in extra:
-        if u and "XXXX" not in str(u):
-            urls.append(str(u).strip())
-    one = cfg.get("ics_url")
-    if one and "XXXX" not in str(one):
-        urls.insert(0, str(one).strip())
+        u = clean_ics_url(u)
+        if u and "XXXX" not in u:
+            urls.append(u)
+    one = clean_ics_url(cfg.get("ics_url"))
+    if one and "XXXX" not in one:
+        urls.insert(0, one)
     # unique, keep order
     seen = set()
     out = []
@@ -223,6 +251,202 @@ def calendar_urls(cfg: dict) -> list[str]:
             seen.add(u)
             out.append(u)
     return out
+
+
+# ---------------------------------------------------------------- Δίκτυο / διάγνωση
+
+# Μεταβλητές περιβάλλοντος που επηρεάζουν το requests (συχνά ξεχασμένες από μια
+# παλιά χειροκίνητη εγκατάσταση Python/pip ή από άλλα προγράμματα).
+PROXY_ENV_VARS = ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "NO_PROXY")
+CA_ENV_VARS = ("REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "SSL_CERT_FILE", "SSL_CERT_DIR")
+
+TLS_BACKEND = "certifi"  # ή "truststore (Windows)" μετά το setup_tls()
+_direct_hosts: set[str] = set()  # διακομιστές που δουλεύουν μόνο χωρίς proxy
+
+
+def setup_tls() -> str:
+    """Πιστοποιητικά από το χώρο αποθήκευσης των Windows (truststore), όπως ο browser.
+
+    Ποτέ δεν σταματά την εφαρμογή: αν κάτι αποτύχει, μένει το certifi του requests.
+    Επίσης αγνοεί REQUESTS_CA_BUNDLE/CURL_CA_BUNDLE/SSL_CERT_FILE που δείχνουν σε
+    αρχείο που δεν υπάρχει (αλλιώς κάθε σύνδεση https αποτυγχάνει)."""
+    global TLS_BACKEND
+    for var in CA_ENV_VARS:
+        val = os.environ.get(var)
+        if val and not Path(val).exists():
+            os.environ.pop(var, None)
+            log(f"tls: αγνοήθηκε το {var} (το αρχείο δεν υπάρχει)")
+    try:
+        import truststore
+
+        truststore.inject_into_ssl()
+        TLS_BACKEND = "truststore (Windows)" if sys.platform.startswith("win") else "truststore"
+    except Exception as e:
+        TLS_BACKEND = "certifi"
+        log(f"tls: truststore μη διαθέσιμο ({type(e).__name__}: {str(e)[:120]}), χρήση certifi")
+    return TLS_BACKEND
+
+
+_URL_RE = re.compile(r"(?:https?|webcals?)://[^\s'\"<>)]+", re.I)
+_USERINFO_RE = re.compile(r"(//)[^/@\s'\"]+@")
+_SECRET_RE = re.compile(r"(private-)[0-9a-zA-Z]+")
+_URLPATH_RE = re.compile(r"(with url: )\S+")
+_OBJ_RE = re.compile(r"<[\w.]+ object at 0x[0-9a-fA-F]+>:?\s*")
+_POOL_RE = re.compile(r"HTTPS?Connection(?:Pool)?\(host='[^']*', port=\d+\):\s*")
+
+
+def redact_url(u: str) -> str:
+    """διακομιστής/…/τελευταίο κομμάτι — χωρίς το μυστικό μέρος της διεύθυνσης."""
+    from urllib.parse import urlparse
+
+    try:
+        p = urlparse(str(u))
+        host = p.hostname or ""
+        if p.port:
+            host = f"{host}:{p.port}"
+    except Exception:
+        return "<url>"
+    last = p.path.rstrip("/").rsplit("/", 1)[-1]
+    if not host:
+        return "<url>"
+    return f"{p.scheme}://{host}/…/{last}" if last else f"{p.scheme}://{host}"
+
+
+def scrub(text: str, urls=()) -> str:
+    """Βγάζει από ένα μήνυμα λάθους τα μυστικά (διαδρομή URL, private-…, user:pass@)."""
+    s = str(text or "")
+    from urllib.parse import urlparse
+
+    for u in urls or ():
+        if not u:
+            continue
+        s = s.replace(u, redact_url(u))
+        try:
+            p = urlparse(u)
+            path = p.path + (f"?{p.query}" if p.query else "")
+            if len(path) > 1:
+                s = s.replace(path, "/…")
+        except Exception:
+            pass
+    s = _URL_RE.sub(lambda m: redact_url(m.group(0)), s)
+    s = _URLPATH_RE.sub(r"\1/…", s)
+    s = _SECRET_RE.sub(r"\1***", s)
+    s = _USERINFO_RE.sub(r"\1***@", s)
+    return s
+
+
+def error_detail(e: BaseException, url: str = "", limit: int = 120) -> str:
+    """«Κλάση: αιτία» σύντομα, π.χ. «SSLError: SSLCertVerificationError: [SSL: …]».
+
+    Το requests τυλίγει το πραγματικό λάθος (MaxRetryError.reason) — το βγάζουμε."""
+    name = type(e).__name__
+    inner = e.args[0] if getattr(e, "args", None) else None
+    reason = getattr(inner, "reason", None)
+    if isinstance(reason, BaseException):
+        msg = f"{type(reason).__name__}: {reason}"
+        # ProxyError('Unable to connect to proxy', NewConnectionError(...))
+        if len(reason.args) > 1 and isinstance(reason.args[1], BaseException):
+            sub = reason.args[1]
+            msg = f"{type(reason).__name__}: {reason.args[0]}: {type(sub).__name__}: {sub}"
+    else:
+        msg = str(e)
+    msg = _POOL_RE.sub("", _OBJ_RE.sub("", scrub(msg, [url])))
+    msg = " ".join(msg.split())
+    if msg.startswith(name + ": "):  # «SSLError: SSLError: …» -> «SSLError: …»
+        msg = msg[len(name) + 2:]
+    return f"{name}: {msg}"[:limit]
+
+
+def proxy_for(url: str) -> str:
+    """Το proxy που θα χρησιμοποιήσει το requests για το url (μεταβλητές περιβάλλοντος
+    ή, στα Windows, μητρώο «Internet Settings» μέσω urllib.getproxies), ή ''."""
+    try:
+        from urllib.parse import urlparse
+
+        scheme = urlparse(url).scheme.lower()
+        found = requests.utils.get_environ_proxies(url) or {}
+        return str(found.get(scheme) or found.get("all") or "")
+    except Exception:
+        return ""
+
+
+def network_diagnostics() -> str:
+    """Μία γραμμή για το app.log: TLS, proxy (χωρίς κωδικούς), μεταβλητές περιβάλλοντος."""
+    parts = [f"tls={TLS_BACKEND}"]
+    try:
+        import urllib.request
+
+        prox = {k: scrub(v) for k, v in urllib.request.getproxies().items()}
+        parts.append(f"proxies={prox or 'none'}")
+    except Exception as e:
+        parts.append(f"proxies=? ({type(e).__name__})")
+    env = [v for v in PROXY_ENV_VARS + CA_ENV_VARS
+           if os.environ.get(v) or os.environ.get(v.lower())]
+    parts.append(f"env={','.join(env) or 'none'}")
+    return "net: " + " ".join(parts)
+
+
+def http_get(url: str, timeout: float = 25):
+    """requests.get με μία επανάληψη ΧΩΡΙΣ proxy όταν το proxy του συστήματος δεν δουλεύει.
+
+    Τα λάθη καταγράφονται (χωρίς μυστικά) στο app.log. Αν αποτύχουν και οι δύο
+    προσπάθειες, πετάει το αρχικό λάθος (αυτό εξηγεί καλύτερα την αιτία)."""
+    from urllib.parse import urlparse
+
+    host = (urlparse(url).hostname or "").lower()
+
+    def direct():
+        with requests.Session() as s:
+            s.trust_env = False  # χωρίς proxy/μεταβλητές περιβάλλοντος
+            return s.get(url, timeout=timeout)
+
+    if host in _direct_hosts:
+        try:
+            return direct()
+        except requests.exceptions.ConnectionError:
+            _direct_hosts.discard(host)
+    try:
+        return requests.get(url, timeout=timeout)
+    except requests.exceptions.ConnectionError as e:
+        proxy = proxy_for(url)
+        if not proxy:
+            raise
+        log(f"http: {redact_url(url)} μέσω proxy {scrub(proxy)} απέτυχε "
+            f"({error_detail(e, url, 300)}) — δοκιμή χωρίς proxy")
+        try:
+            r = direct()
+        except Exception as e2:
+            log(f"http: {redact_url(url)} και χωρίς proxy απέτυχε ({error_detail(e2, url, 300)})")
+            raise e
+        log(f"http: {redact_url(url)} δουλεύει χωρίς proxy — το proxy του συστήματος παρακάμπτεται")
+        _direct_hosts.add(host)
+        return r
+
+
+def connection_error_message(e: BaseException, url: str = "") -> str:
+    """Ελληνικό μήνυμα για λάθος σύνδεσης + σύντομη τεχνική λεπτομέρεια (χωρίς μυστικά)."""
+    detail = error_detail(e, url)
+    low = detail.lower()
+    if isinstance(e, requests.exceptions.SSLError) or "ca certificate bundle" in low:
+        msg = ("Πρόβλημα με το πιστοποιητικό ασφαλείας (SSL) της σύνδεσης. Ελέγξτε ότι η "
+               "ημερομηνία και η ώρα του υπολογιστή είναι σωστές και δοκιμάστε ξανά.")
+    elif isinstance(e, requests.exceptions.ProxyError):
+        msg = ("Δεν υπάρχει σύνδεση μέσω του διακομιστή μεσολάβησης (proxy) των Windows. "
+               "Ελέγξτε τις ρυθμίσεις proxy (Ρυθμίσεις → Δίκτυο και Internet → "
+               "Διακομιστής μεσολάβησης).")
+    elif isinstance(e, requests.exceptions.Timeout):
+        msg = "Ο διακομιστής δεν απάντησε εγκαίρως (20 δευτ.). Δοκιμάστε ξανά."
+    elif ("nameresolution" in low or "getaddrinfo" in low or "name or service" in low
+          or "11001" in low or "11002" in low):
+        msg = ("Δεν βρέθηκε ο διακομιστής (DNS). Ελέγξτε τη σύνδεση στο ίντερνετ και ότι "
+               "ο σύνδεσμος είναι σωστός.")
+    elif "10013" in low or "permission" in low:
+        msg = ("Η σύνδεση μπλοκαρίστηκε από το τείχος προστασίας (firewall) ή πρόγραμμα "
+               "ασφαλείας. Επιτρέψτε στο Ypenthimiseis.exe πρόσβαση στο ίντερνετ.")
+    else:
+        msg = "Δεν υπάρχει σύνδεση με τον διακομιστή. Ελέγξτε το ίντερνετ και τον σύνδεσμο."
+    return f"{msg}\n(Λεπτομέρειες: {detail})"
+
 
 
 CONFIG_DEFAULTS = {
@@ -279,11 +503,11 @@ def build_config(values: dict, existing: dict | None = None) -> tuple[dict, list
 
     name = str(values.get("store_name") or "").strip()
     sid = str(values.get("store_id") or "").strip().lower()
-    ics = str(values.get("ics_url") or "").strip()
+    ics = clean_ics_url(values.get("ics_url"))
     extra_raw = values.get("ics_urls") or []
     if isinstance(extra_raw, str):
         extra_raw = extra_raw.splitlines()
-    extras = [str(u).strip() for u in extra_raw if str(u).strip()]
+    extras = [clean_ics_url(u) for u in extra_raw if clean_ics_url(u)]
 
     if not name:
         errors.append("Συμπλήρωσε το όνομα του καταστήματος.")
@@ -318,8 +542,8 @@ def build_config(values: dict, existing: dict | None = None) -> tuple[dict, list
     # ics_names (προαιρετικό, {url: όνομα}): οι παλιές εκδόσεις απλώς το αγνοούν
     names = values.get("ics_names") if "ics_names" in values else cfg.get("ics_names")
     keep = {ics, *cfg["ics_urls"]}
-    names = {str(u).strip(): str(n).strip() for u, n in (names or {}).items()
-             if str(n or "").strip() and str(u).strip() in keep} if isinstance(names, dict) else {}
+    names = {clean_ics_url(u): str(n).strip() for u, n in (names or {}).items()
+             if str(n or "").strip() and clean_ics_url(u) in keep} if isinstance(names, dict) else {}
     if names:
         cfg["ics_names"] = names
     else:
@@ -430,12 +654,13 @@ class ReminderEngine:
         errors = []
         for url in urls:
             try:
-                r = requests.get(url, timeout=25)
+                r = http_get(url, timeout=25)
                 r.raise_for_status()
                 cal = Calendar.from_ical(r.content)
                 instances = recurring_ical_events.of(cal).between(window_start, window_end)
             except Exception as e:
-                errors.append(str(e))
+                # χωρίς τη μυστική διαδρομή του URL (το str(e) του requests την περιέχει)
+                errors.append(f"{redact_url(url)}: {error_detail(e, url, 300)}")
                 continue
             for ev in instances:
                 if ev.name != "VEVENT":
@@ -1163,11 +1388,17 @@ class Overlay:
 
 def play_loop(engine: ReminderEngine):
     overlay = Overlay(engine)
+    logged_err, logged_at = "", 0.0
     while True:
         try:
             engine.fetch()
-            if engine.last_error:
-                log(f"fetch: {engine.last_error}")
+            err = engine.last_error
+            if err and (err != logged_err or time.monotonic() - logged_at > 600):
+                log(f"fetch: {err}")
+                logged_err, logged_at = err, time.monotonic()
+            elif not err and logged_err:
+                log("fetch: ξανά εντάξει")
+                logged_err = ""
             due = engine.due_events()
             for i, ev in enumerate(due, 1):
                 if engine.is_dismissed(ev["key"]) or engine.snoozed(ev["key"]):
@@ -1184,14 +1415,6 @@ def play_loop(engine: ReminderEngine):
 
 
 # ---------------------------------------------------------------- Ρυθμίσεις
-
-def clean_ics_url(text: str) -> str:
-    """Αφαιρεί κενά/αλλαγές γραμμής (συχνά μετά από επικόλληση) και κάνει webcal:// -> https://."""
-    u = "".join(str(text or "").split())
-    if u.lower().startswith("webcal://"):
-        u = "https://" + u[len("webcal://"):]
-    return u
-
 
 def short_url(u: str) -> str:
     """Σύντομη μορφή για τη λίστα: διακομιστής/…/τελευταίο κομμάτι (κρύβει τα μυστικά tokens)."""
@@ -1214,13 +1437,25 @@ def check_ics(url: str) -> tuple[bool, str]:
     if not url.lower().startswith(("http://", "https://")):
         return False, "Ο σύνδεσμος πρέπει να ξεκινά με https:// (ή http://)."
     try:
-        r = requests.get(url, timeout=20)
-    except requests.exceptions.Timeout:
-        return False, "Ο διακομιστής δεν απάντησε εγκαίρως (20 δευτ.). Δοκιμάστε ξανά."
-    except requests.exceptions.ConnectionError:
-        return False, "Δεν υπάρχει σύνδεση με τον διακομιστή. Ελέγξτε το ίντερνετ και τον σύνδεσμο."
+        r = http_get(url, timeout=20)
+    except requests.exceptions.Timeout as e:
+        log(f"check: {redact_url(url)}: {error_detail(e, url, 500)}")
+        return False, ("Ο διακομιστής δεν απάντησε εγκαίρως (20 δευτ.). Δοκιμάστε ξανά."
+                       f"\n(Λεπτομέρειες: {error_detail(e, url)})")
+    except requests.exceptions.ConnectionError as e:
+        log(f"check: {redact_url(url)}: {error_detail(e, url, 500)} | {network_diagnostics()}")
+        return False, connection_error_message(e, url)
+    except OSError as e:  # π.χ. REQUESTS_CA_BUNDLE σε αρχείο που λείπει
+        if isinstance(e, requests.exceptions.RequestException):  # InvalidURL κ.λπ.
+            log(f"check: {redact_url(url)}: {error_detail(e, url, 500)}")
+            return False, f"Ο σύνδεσμος δεν είναι έγκυρος ({error_detail(e, url, 100)})."
+        log(f"check: {redact_url(url)}: {error_detail(e, url, 500)} | {network_diagnostics()}")
+        return False, connection_error_message(e, url)
     except Exception as e:
-        return False, f"Ο σύνδεσμος δεν είναι έγκυρος ({str(e)[:80]})."
+        log(f"check: {redact_url(url)}: {error_detail(e, url, 500)}")
+        return False, f"Ο σύνδεσμος δεν είναι έγκυρος ({error_detail(e, url, 100)})."
+    if r.status_code >= 400:
+        log(f"check: {redact_url(url)}: HTTP {r.status_code}")
     if r.status_code in (401, 403, 404):
         return False, (f"Ο σύνδεσμος δεν βρέθηκε ή δεν επιτρέπεται (HTTP {r.status_code}). "
                        "Αντιγράψτε τον ξανά από το ημερολόγιο.")
@@ -1239,9 +1474,10 @@ def check_ics(url: str) -> tuple[bool, str]:
 def calendars_from_config(cfg: dict) -> list[list]:
     """[[url, όνομα, κεντρικό], ...] από ics_url / ics_urls / ics_names (και παλιά config)."""
     names = cfg.get("ics_names") if isinstance(cfg.get("ics_names"), dict) else {}
+    names = {clean_ics_url(k): v for k, v in names.items()}
     out: list[list] = []
     seen = set()
-    central = str(cfg.get("ics_url") or "").strip()
+    central = clean_ics_url(cfg.get("ics_url"))
     if central and "XXXX" not in central:
         out.append([central, str(names.get(central, "") or ""), True])
         seen.add(central)
@@ -1249,7 +1485,7 @@ def calendars_from_config(cfg: dict) -> list[list]:
     if isinstance(extra, str):
         extra = extra.splitlines()
     for u in extra:
-        u = str(u).strip()
+        u = clean_ics_url(u)
         if u and "XXXX" not in u and u not in seen:
             out.append([u, str(names.get(u, "") or ""), False])
             seen.add(u)
@@ -1962,6 +2198,7 @@ def setup_tray(engine: ReminderEngine):
 
 def main():
     install_crash_logging()
+    setup_tls()
     if "--settings" in sys.argv[1:]:
         run_settings_window(first_run=not config_is_complete(read_config_raw()))
         return
@@ -1982,6 +2219,7 @@ def main():
         if not ok or not config_is_complete(read_config_raw()):
             return
     log(f"start (pid {os.getpid()}, data {BASE})")
+    log(network_diagnostics())
     cfg = load_config()
     engine = ReminderEngine(cfg)
     setup_tray(engine)
