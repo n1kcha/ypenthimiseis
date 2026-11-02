@@ -386,7 +386,7 @@ def network_diagnostics() -> str:
     return "net: " + " ".join(parts)
 
 
-def http_get(url: str, timeout: float = 25):
+def _tcp_get(url: str, timeout: float = 25):
     """requests.get με μία επανάληψη ΧΩΡΙΣ proxy όταν το proxy του συστήματος δεν δουλεύει.
 
     Τα λάθη καταγράφονται (χωρίς μυστικά) στο app.log. Αν αποτύχουν και οι δύο
@@ -423,6 +423,109 @@ def http_get(url: str, timeout: float = 25):
         return r
 
 
+# Εναλλακτικοί δρόμοι όταν το κανονικό TCP/TLS του requests κόβεται (π.χ. WinError 10054
+# μόλις φύγει το ClientHello προς τους διακομιστές της Google, ενώ ο browser δουλεύει
+# μέσω HTTP/3/QUIC). Όλα μέσω curl_cffi (libcurl με ngtcp2/nghttp3 + BoringSSL):
+#   "h3"         HTTP/3 πάνω από QUIC (UDP 443) — αυτό που κάνει και ο browser
+#   "tls-chrome" HTTP/2 πάνω από TCP με ClientHello ίδιο με του Chrome (μεγαλύτερο,
+#                σε 2 πακέτα· περνά από φίλτρα που κόβουν το ClientHello της Python)
+# Πάντα με έλεγχο πιστοποιητικού (certifi) και χρονικό όριο. Χωρίς proxy: το proxy
+# του συστήματος το έχει ήδη δοκιμάσει το _tcp_get, και το HTTP/3 δεν περνά από proxy.
+FALLBACK_TRANSPORTS = ("h3", "tls-chrome")
+FALLBACK_TIMEOUT = 15
+_host_transport: dict[str, str] = {}  # διακομιστής -> δρόμος που δούλεψε (για όλη τη συνεδρία)
+_curl_missing_logged = False
+
+
+def _alt_get(url: str, transport: str, timeout: float = FALLBACK_TIMEOUT):
+    """GET μέσω curl_cffi ("h3" ή "tls-chrome"). Πετάει εξαίρεση αν αποτύχει."""
+    from curl_cffi import requests as curl_requests
+
+    kw = {"timeout": timeout, "allow_redirects": True, "max_redirects": 10, "verify": True}
+    if transport == "h3":
+        kw["http_version"] = "v3only"
+    elif transport == "tls-chrome":
+        kw["impersonate"] = "chrome"
+    else:
+        raise ValueError(f"unknown transport {transport}")
+    with curl_requests.Session(trust_env=False) as s:
+        return s.get(url, **kw)
+
+
+def _fallback_worthy(e: BaseException) -> bool:
+    """Αξίζει άλλος δρόμος; Ναι για reset/κλείσιμο/SSL EOF/timeout σύνδεσης.
+    Όχι για DNS (ούτε το HTTP/3 θα βρει τον διακομιστή) ούτε για μη έγκυρο URL."""
+    if not isinstance(e, (requests.exceptions.ConnectionError, requests.exceptions.Timeout)):
+        return False
+    low = error_detail(e, "", 400).lower()
+    return not ("nameresolution" in low or "getaddrinfo" in low or "name or service" in low
+                or "11001" in low or "11002" in low)
+
+
+def http_get(url: str, timeout: float = 25, transports=None):
+    """GET του ICS με αυτόματη εναλλακτική διαδρομή.
+
+    1. Αν για τον διακομιστή έχει ήδη δουλέψει εναλλακτικός δρόμος σε αυτή τη συνεδρία,
+       δοκιμάζεται πρώτος (αν αποτύχει, ξεχνιέται και συνεχίζουμε κανονικά).
+    2. requests (TCP, με το proxy του συστήματος και επανάληψη χωρίς proxy).
+    3. Αν το 2 αποτύχει με λάθος σύνδεσης (όχι HTTP 4xx/5xx, όχι DNS): HTTP/3 και μετά
+       TLS σαν του Chrome. Αν αποτύχουν όλα, πετάει το αρχικό λάθος του requests.
+    Στο app.log γράφεται ποιος δρόμος χρησιμοποιήθηκε, χωρίς τη μυστική διαδρομή."""
+    global _curl_missing_logged
+    from urllib.parse import urlparse
+
+    host = (urlparse(url).hostname or "").lower()
+    order = FALLBACK_TRANSPORTS if transports is None else tuple(transports)
+    pref = _host_transport.get(host)
+    if pref and pref in order:
+        try:
+            return _alt_get(url, pref, min(timeout, FALLBACK_TIMEOUT))
+        except Exception as e:
+            _host_transport.pop(host, None)
+            log(f"net: {pref} failed for {host} ({error_detail(e, url, 200)}) — back to tcp")
+    try:
+        return _tcp_get(url, timeout)
+    except Exception as e:
+        if not order or not _fallback_worthy(e):
+            raise
+        log(f"net: tcp failed for {host} ({error_detail(e, url, 200)}) — trying {', '.join(order)}")
+        for t in order:
+            try:
+                r = _alt_get(url, t, min(timeout, FALLBACK_TIMEOUT))
+            except ImportError as ie:
+                if not _curl_missing_logged:
+                    log(f"net: curl_cffi unavailable ({type(ie).__name__}: {str(ie)[:100]})")
+                    _curl_missing_logged = True
+                break
+            except Exception as e2:
+                log(f"net: {t} fallback failed for {host} ({error_detail(e2, url, 200)})")
+                continue
+            log(f"net: {t} fallback ok for {host} (HTTP {getattr(r, 'status_code', '?')})")
+            _host_transport[host] = t
+            return r
+        raise e
+
+
+def net_selftest(url: str, transport: str = "auto") -> bool:
+    """Για το CI/υποστήριξη: `Ypenthimiseis.exe --net-selftest <tcp|h3|tls-chrome|auto> <url>`.
+    Γράφει το αποτέλεσμα στο app.log (χωρίς μυστική διαδρομή) και επιστρέφει True αν 2xx."""
+    try:
+        if transport == "tcp":
+            r = _tcp_get(url, 20)
+        elif transport == "auto":
+            r = http_get(url, 20)
+        else:
+            r = _alt_get(url, transport, 20)
+        body = bytes(getattr(r, "content", b"") or b"")
+        ok = 200 <= int(r.status_code) < 300 and len(body) > 0
+        log(f"net-selftest: {transport} {redact_url(url)} -> HTTP {r.status_code}, "
+            f"{len(body)} bytes, ics={b'BEGIN:VCALENDAR' in body[:200]}, ok={ok}")
+        return ok
+    except Exception as e:
+        log(f"net-selftest: {transport} {redact_url(url)} -> {error_detail(e, url, 300)}")
+        return False
+
+
 def connection_error_message(e: BaseException, url: str = "") -> str:
     """Ελληνικό μήνυμα για λάθος σύνδεσης + σύντομη τεχνική λεπτομέρεια (χωρίς μυστικά)."""
     detail = error_detail(e, url)
@@ -440,6 +543,10 @@ def connection_error_message(e: BaseException, url: str = "") -> str:
           or "11001" in low or "11002" in low):
         msg = ("Δεν βρέθηκε ο διακομιστής (DNS). Ελέγξτε τη σύνδεση στο ίντερνετ και ότι "
                "ο σύνδεσμος είναι σωστός.")
+    elif "10054" in low or "connection reset" in low or "connectionreset" in low:
+        msg = ("Η σύνδεση διακόπηκε από το δίκτυο αμέσως μετά το αίτημα (reset). "
+               "Δοκιμάστηκαν και εναλλακτικοί δρόμοι (HTTP/3) χωρίς επιτυχία. Ελέγξτε το "
+               "δίκτυο ή κάποιο VPN/πρόγραμμα που φιλτράρει τη σύνδεση.")
     elif "10013" in low or "permission" in low:
         msg = ("Η σύνδεση μπλοκαρίστηκε από το τείχος προστασίας (firewall) ή πρόγραμμα "
                "ασφαλείας. Επιτρέψτε στο Ypenthimiseis.exe πρόσβαση στο ίντερνετ.")
@@ -2199,6 +2306,14 @@ def setup_tray(engine: ReminderEngine):
 def main():
     install_crash_logging()
     setup_tls()
+    args = sys.argv[1:]
+    if "--net-selftest" in args:
+        i = args.index("--net-selftest")
+        rest = args[i + 1:i + 3]
+        if len(rest) == 2:
+            log(network_diagnostics())
+            sys.exit(0 if net_selftest(rest[1], rest[0]) else 1)
+        sys.exit(2)
     if "--settings" in sys.argv[1:]:
         run_settings_window(first_run=not config_is_complete(read_config_raw()))
         return

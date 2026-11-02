@@ -22,6 +22,8 @@ def logfile(tmp_path, monkeypatch):
     p = tmp_path / "app.log"
     monkeypatch.setattr(app, "LOG_PATH", p)
     monkeypatch.setattr(app, "_direct_hosts", set())
+    monkeypatch.setattr(app, "_host_transport", {})
+    monkeypatch.setattr(app, "FALLBACK_TRANSPORTS", ())  # χωρίς HTTP/3 εδώ (βλ. test_fallback.py)
     return p
 
 
