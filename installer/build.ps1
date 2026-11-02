@@ -25,6 +25,8 @@ python -m PyInstaller --noconfirm --clean --windowed `
     --collect-all icalendar `
     --collect-all x_wr_timezone `
     --hidden-import truststore `
+    --additional-hooks-dir installer\hooks `
+    --hidden-import curl_cffi `
     --collect-submodules truststore `
     --hidden-import pystray._win32 `
     --hidden-import PIL.ImageTk `

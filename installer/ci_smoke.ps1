@@ -42,6 +42,31 @@ Start-Sleep 2
 $cfgJson = '{"store_name":"Smoke","store_id":"smoke","ics_url":"http://127.0.0.1:8765/test.ics","ics_urls":[],"poll_seconds":30,"minutes_before":0,"show_missed_max_minutes":15,"sound":true,"sound_seconds":5}'
 
 try {
+    # ---- 0) network fallbacks inside the frozen exe (curl_cffi bundled, real HTTP/3 to Google)
+    Write-Host "== 0) frozen exe --net-selftest (tcp, h3, tls-chrome)"
+    $pub = "https://calendar.google.com/calendar/ical/el.greek%23holiday%40group.v.calendar.google.com/public/basic.ics"
+    $la0 = Join-Path $tmp "la0"; $d0 = Join-Path $la0 "Ypenthimiseis"
+    New-Item -ItemType Directory -Force $d0 | Out-Null
+    $env:LOCALAPPDATA = $la0
+    foreach ($t in "tcp", "h3", "tls-chrome") {
+        foreach ($u in "https://www.google.com/", $pub) {
+            $p = Start-Process $exe -ArgumentList "--net-selftest", $t, $u -PassThru; $null = $p.Handle
+            if (-not $p.WaitForExit(60000)) { $p | Stop-Process -Force; Fail "net-selftest $t timed out" }
+            if ($p.ExitCode -ne 0) { Get-Content (Join-Path $d0 "app.log"); Fail "net-selftest $t failed for $u (exit $($p.ExitCode))" }
+        }
+    }
+    Get-Content (Join-Path $d0 "app.log")
+    if (-not (Select-String -Path (Join-Path $d0 "app.log") -Pattern "net-selftest: h3 .*ics=True, ok=True" -Quiet)) { Fail "h3 did not fetch the ICS" }
+    Write-Host "OK: tcp, HTTP/3 and Chrome-TLS fetch work from the exe"
+    $env:LOCALAPPDATA = $realLocal
+
+    # ---- python-level real network tests (same code paths, not frozen)
+    $env:YPEN_NET_TESTS = "1"
+    python -m pytest -q tests/test_fallback.py -k real
+    $rc = $LASTEXITCODE
+    Remove-Item Env:YPEN_NET_TESTS
+    if ($rc -ne 0) { Fail "real network fallback tests failed" }
+
     # ---- 1) frozen exe: fetch + popup; data must go to %LOCALAPPDATA%\Ypenthimiseis
     Write-Host "== 1) frozen exe with config"
     $la1 = Join-Path $tmp "la1"; $d1 = Join-Path $la1 "Ypenthimiseis"
