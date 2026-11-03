@@ -586,6 +586,55 @@ def test_popup_long_text_grows_then_scrolls_never_cut(work):
 
 
 @pytest.mark.skipif(not _has_display(), reason="χωρίς tkinter/οθόνη")
+def test_popup_renders_google_html_description(monkeypatch):
+    """Περιγραφή σε HTML (όπως του Google): κουκκίδες, έντονα/πλάγια/υπογράμμιση, σύνδεσμος
+    που ανοίγει· χωρίς ετικέτες στο κείμενο και χωρίς να κόβεται."""
+    opened = []
+    monkeypatch.setattr(app.webbrowser, "open", lambda u: opened.append(u))
+    desc = ("<b>Παραλαβή</b> κρέατος:<ul><li>Θερμοκρασία&nbsp;ψυγείου</li><li><i>Τιμολόγιο</i> &amp; "
+            "<u>ζύγιση</u></li></ul>Οδηγίες <a href=\"https://example.com/o\">εδώ</a>")
+    eng = _Eng()
+    ov = app.Overlay(eng)
+    ov.work_area = (0, 0, 1366, 728)
+    root = _build(ov, _ev("Παραλαβή κρέατος", desc))
+    _settle(root)
+    t = ov._desc
+    shown = t.get("1.0", "end-1c")
+    assert shown == ("Παραλαβή κρέατος:\n• Θερμοκρασία ψυγείου\n• Τιμολόγιο & ζύγιση\n"
+                     "Οδηγίες εδώ")
+    assert "<" not in shown and "&nbsp;" not in shown
+    import tkinter.font as tkfont
+
+    def font_at(word):
+        i = t.search(word, "1.0", "end")
+        names = [n for n in t.tag_names(i) if n.startswith("fmt-")]
+        assert names, (word, t.tag_names(i))
+        return tkfont.Font(root=root, font=t.tag_cget(names[0], "font")).actual()
+
+    assert font_at("Παραλαβή")["weight"] == "bold"
+    assert font_at("Τιμολόγιο")["slant"] == "italic"
+    assert font_at("ζύγιση")["underline"]
+    assert font_at("εδώ")["underline"]
+    assert not [n for n in t.tag_names(t.search("ψυγείου", "1.0", "end")) if n.startswith("fmt-")]
+    hang = [n for n in t.tag_names("2.0") if n.startswith("hang")]  # «• …»: εσοχή στην αναδίπλωση
+    assert hang and int(t.tag_cget(hang[0], "lmargin2")) > 0
+    assert not [n for n in t.tag_names("1.0") if n.startswith("hang")]
+    i = t.search("εδώ", "1.0", "end")
+    link = [n for n in t.tag_names(i) if n.startswith("link")][0]
+    assert t.tk.call(t._w, "tag", "bind", link, "<Button-1>")  # κλικ ανοίγει τον σύνδεσμο
+    bx, by, bw, bh = t.bbox(i)
+    cx, cy = bx + bw // 2, by + bh // 2
+    t.event_generate("<Enter>", x=cx, y=cy, when="now")
+    t.event_generate("<Motion>", x=cx, y=cy, when="now")  # ενημερώνει το «current» του Text
+    t.event_generate("<ButtonPress-1>", x=cx, y=cy, when="now")
+    root.update()
+    assert opened == ["https://example.com/o"]
+    assert not ov.layout["scroll"]
+    ov._close()
+    ov.pump()
+
+
+@pytest.mark.skipif(not _has_display(), reason="χωρίς tkinter/οθόνη")
 def test_popup_desc_fixup_when_real_text_taller(monkeypatch):
     """Τα Windows αναδιπλώνουν λίγο διαφορετικά από τη μέτρηση στον καμβά: αν το
     πραγματικό κείμενο βγει ψηλότερο, το πλαίσιο μεγαλώνει (ή κυλά) — ποτέ κρυφό κείμενο."""
