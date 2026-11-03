@@ -233,6 +233,29 @@ def test_settings_window_cancel_keeps_config(tmpcfg):
     assert tmpcfg.read_text(encoding="utf-8") == before
 
 
+@pytest.mark.skipif(not _has_display(), reason="χωρίς tkinter/οθόνη")
+def test_settings_window_shows_version(tmpcfg, monkeypatch):
+    monkeypatch.setattr(app, "APP_VERSION", "1.0.5")
+    seen = {}
+
+    def look(root, c):
+        try:
+            lbl = c["version"]
+            seen["text"] = lbl.cget("text")
+            seen["fg"] = str(lbl.cget("fg")).upper()
+            seen["mapped"] = bool(lbl.winfo_ismapped())
+        except Exception as e:  # αλλιώς το mainloop δεν κλείνει
+            seen["error"] = repr(e)
+        finally:
+            c["cancel"]()
+
+    _run_window(on_ready=look)
+    assert "error" not in seen, seen.get("error")
+    assert seen["text"] == "Έκδοση 1.0.5"
+    assert seen["fg"] == app.MUTED.upper()
+    assert seen["mapped"]
+
+
 def test_open_settings_async_reloads(tmpcfg, monkeypatch):
     """Η διεργασία ρυθμίσεων γράφει νέο config -> η μηχανή το φορτώνει χωρίς restart."""
     import threading
