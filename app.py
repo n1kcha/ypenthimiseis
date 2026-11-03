@@ -33,6 +33,19 @@ from icalendar import Calendar
 import recurring_ical_events
 
 APP_NAME = "Υπενθυμίσεις καταστημάτων"
+
+
+def app_version() -> str:
+    """Η έκδοση που έγραψε το build (installer/build.ps1 → _version.py) ή «dev» από τον κώδικα."""
+    try:
+        from _version import VERSION  # παράγεται στο build, δεν μπαίνει στο git
+    except Exception:
+        return "dev"
+    v = str(VERSION).strip()
+    return v or "dev"
+
+
+APP_VERSION = app_version()
 POLL_DEFAULT = 30
 HELLENIC = ZoneInfo("Europe/Athens") if ZoneInfo else timezone(timedelta(hours=3))
 
@@ -1897,6 +1910,8 @@ def run_settings_window(first_run: bool = False, on_ready=None) -> bool:
 
     amber_header(root, "Ρυθμίσεις", APP_NAME)
     fr = footer(root)
+    version_label = tk.Label(fr, text=f"Έκδοση {APP_VERSION}", font=f(9), fg=MUTED, bg=CREAM)
+    version_label.pack(side="left")
 
     body = ttk.Frame(root, padding=(24, 14, 24, 8))
     body.pack(fill="both", expand=True)
@@ -2093,7 +2108,7 @@ def run_settings_window(first_run: bool = False, on_ready=None) -> bool:
     if on_ready:
         controls = {
             "store_name": v_name, "store_id": v_id, "sound": v_sound, "sound_seconds": v_sec,
-            "status": status, "save": on_save, "cancel": root.destroy, "tree": tree,
+            "status": status, "version": version_label, "save": on_save, "cancel": root.destroy, "tree": tree,
             "calendars": cals, "add_calendar": lambda u, n="", c=False: apply_calendar(
                 (clean_ics_url(u), n, c)),
             "remove_selected": lambda: (cals.pop(selected()), refresh()) if selected() is not None else None,
@@ -2296,11 +2311,16 @@ def setup_tray(engine: ReminderEngine):
         pystray.MenuItem("Άνοιγμα Google Calendar", open_calendar),
         pystray.MenuItem("Έξοδος", exit_app),
     )
-    icon = pystray.Icon("store_reminders", img, APP_NAME, menu)
+    icon = pystray.Icon("store_reminders", img, tray_tooltip(), menu)
 
     t = threading.Thread(target=play_loop, args=(engine,), daemon=True)
     t.start()
     icon.run()
+
+
+def tray_tooltip() -> str:
+    """Κείμενο όταν ο δείκτης στέκεται στο εικονίδιο (όριο Windows: 127 χαρακτήρες)."""
+    return f"{APP_NAME} · έκδοση {APP_VERSION}"[:127]
 
 
 def main():
@@ -2308,6 +2328,7 @@ def main():
     setup_tls()
     args = sys.argv[1:]
     if "--net-selftest" in args:
+        log(f"version {APP_VERSION}")
         i = args.index("--net-selftest")
         rest = args[i + 1:i + 3]
         if len(rest) == 2:
@@ -2333,7 +2354,7 @@ def main():
         gc.collect()
         if not ok or not config_is_complete(read_config_raw()):
             return
-    log(f"start (pid {os.getpid()}, data {BASE})")
+    log(f"start (pid {os.getpid()}, data {BASE}, version {APP_VERSION})")
     log(network_diagnostics())
     cfg = load_config()
     engine = ReminderEngine(cfg)

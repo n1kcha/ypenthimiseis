@@ -12,3 +12,4 @@ chime.wav
 app.log
 app.old.log
 *.tmp
+_version.py

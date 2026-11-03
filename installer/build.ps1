@@ -12,6 +12,9 @@ Set-Location $root
 python -m pip install -r requirements.txt pyinstaller
 if ($LASTEXITCODE -ne 0) { throw "pip install failed" }
 
+# Η έκδοση μέσα στο exe (app.py: app_version); από τον κώδικα χωρίς build = "dev".
+Set-Content -Path _version.py -Value "VERSION = `"$Version`"" -Encoding ascii
+
 python installer\make_icon.py
 if ($LASTEXITCODE -ne 0) { throw "icon failed" }
 
@@ -25,6 +28,7 @@ python -m PyInstaller --noconfirm --clean --windowed `
     --collect-all icalendar `
     --collect-all x_wr_timezone `
     --hidden-import truststore `
+    --hidden-import _version `
     --additional-hooks-dir installer\hooks `
     --hidden-import curl_cffi `
     --collect-submodules truststore `
