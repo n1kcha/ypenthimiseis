@@ -2354,7 +2354,7 @@ def main():
         gc.collect()
         if not ok or not config_is_complete(read_config_raw()):
             return
-    log(f"start v{APP_VERSION} (pid {os.getpid()}, data {BASE})")
+    log(f"start (pid {os.getpid()}, data {BASE}, version {APP_VERSION})")
     log(network_diagnostics())
     cfg = load_config()
     engine = ReminderEngine(cfg)

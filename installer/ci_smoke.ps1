@@ -62,6 +62,8 @@ try {
     $want = if ($env:APP_VERSION) { $env:APP_VERSION } else { "1.0.0" }
     if (-not (Select-String -Path (Join-Path $d0 "app.log") -Pattern ("version " + [regex]::Escape($want) + "$") -Quiet)) { Fail "exe does not report version $want" }
     Write-Host "OK: exe reports version $want"
+    python -m pytest -q -rs tests/test_config.py -k "settings_window"   # incl. the version label, on real Windows Tk
+    if ($LASTEXITCODE -ne 0) { Fail "settings window tests failed" }
     $env:LOCALAPPDATA = $realLocal
 
     # ---- python-level real network tests (same code paths, not frozen)
