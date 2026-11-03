@@ -708,6 +708,178 @@ def parse_target_tags(title: str, description: str) -> tuple[list[str] | None, s
     return tags, clean
 
 
+# ---------------------------------------------------------------- περιγραφή (HTML του Google)
+
+# Το Google Calendar αποθηκεύει τις μορφοποιημένες περιγραφές ως HTML μέσα στο ICS
+# (<ul><li>, <b>, <br>, <a>, &nbsp; …). Τις κάνουμε κείμενο με «κομμάτια» μορφής για το Tk.
+_HTML_HINT = re.compile(
+    r"<\s*/?\s*(?:br|p|div|span|ul|ol|li|b|strong|i|em|u|a|font|h[1-6]|blockquote|pre|table|tr|td|th|"
+    r"hr|img|html|body|html-blob|sup|sub|s|strike|del|code)\b[^<>]*>"
+    r"|&(?:nbsp|amp|lt|gt|quot|apos|#\d{1,7}|#x[0-9a-fA-F]{1,6});",
+    re.IGNORECASE,
+)
+BULLETS = ("•", "◦", "▪")
+LINK_SCHEMES = ("http://", "https://", "mailto:")
+
+
+def looks_like_html(text: str) -> bool:
+    return bool(text) and bool(_HTML_HINT.search(text))
+
+
+def _desc_html_runs(src: str) -> list[tuple[str, frozenset, str | None]]:
+    from html.parser import HTMLParser
+
+    BLOCK = {"p", "div", "h1", "h2", "h3", "h4", "h5", "h6", "blockquote", "pre", "table", "tr",
+             "ul", "ol", "hr", "section", "article", "header", "footer", "dl", "dt", "dd"}
+    STYLE = {"b": "bold", "strong": "bold", "th": "bold", "h1": "bold", "h2": "bold", "h3": "bold",
+             "h4": "bold", "h5": "bold", "h6": "bold", "i": "italic", "em": "italic",
+             "u": "underline", "ins": "underline", "s": "strike", "strike": "strike", "del": "strike"}
+    SKIP = {"script", "style", "head", "title"}
+    chars: list[tuple[str, tuple]] = []
+    state = {"styles": [], "lists": [], "href": [], "skip": 0}
+
+    def cur():
+        return (frozenset(state["styles"]), state["href"][-1] if state["href"] else None)
+
+    def at_line_start() -> bool:
+        return not chars or chars[-1][0] == "\n"
+
+    def put(text: str, key=None):
+        k = key or cur()
+        for ch in text:
+            chars.append((ch, k))
+
+    def newline():
+        # όχι αλλαγή γραμμής αμέσως μετά την κουκκίδα (π.χ. <li><p>…</p></li>)
+        if not at_line_start() and len(chars) != state.get("marker_end"):
+            put("\n", (frozenset(), None))
+
+    class P(HTMLParser):
+        def handle_starttag(self, tag, attrs):
+            tag = tag.lower()
+            if tag in SKIP:
+                state["skip"] += 1
+                return
+            if tag == "br":
+                put("\n", (frozenset(), None))
+                return
+            if tag in ("ul", "ol"):
+                newline()
+                state["lists"].append([tag, 0])
+            elif tag == "li":
+                newline()
+                lists = state["lists"] or [["ul", 0]]
+                kind = lists[-1]
+                depth = len(lists)
+                if kind[0] == "ol":
+                    kind[1] += 1
+                    mark = f"{kind[1]}. "
+                else:
+                    mark = BULLETS[min(depth, len(BULLETS)) - 1] + " "
+                put("    " * (depth - 1) + mark, (frozenset(), None))
+                state["marker_end"] = len(chars)
+            elif tag in BLOCK:
+                newline()
+            elif tag == "td" and not at_line_start():
+                put("  ")
+            if tag in STYLE:
+                state["styles"].append(STYLE[tag])
+            if tag == "a":
+                href = (dict(attrs).get("href") or "").strip()
+                state["href"].append(href if href.lower().startswith(LINK_SCHEMES) else None)
+                state["a_start"] = len(chars)
+
+        def handle_startendtag(self, tag, attrs):
+            self.handle_starttag(tag, attrs)
+            if tag.lower() not in ("br", "hr", "img"):
+                self.handle_endtag(tag)
+
+        def handle_endtag(self, tag):
+            tag = tag.lower()
+            if tag in SKIP:
+                state["skip"] = max(0, state["skip"] - 1)
+                return
+            if tag in STYLE and STYLE[tag] in state["styles"]:
+                i = len(state["styles"]) - 1 - state["styles"][::-1].index(STYLE[tag])
+                del state["styles"][i]
+            if tag == "a" and state["href"]:
+                href = state["href"][-1]
+                if href and len(chars) == state.get("a_start", -1):  # σύνδεσμος χωρίς κείμενο
+                    put(href)
+                state["href"].pop()
+            if tag in ("ul", "ol"):
+                if state["lists"]:
+                    state["lists"].pop()
+                newline()
+            elif tag in BLOCK or tag == "li":
+                newline()
+
+        def handle_data(self, data):
+            if state["skip"]:
+                return
+            data = data.replace("\xa0", " ").replace("\r\n", "\n").replace("\r", "\n")
+            for i, part in enumerate(data.split("\n")):
+                if i:
+                    put("\n", (frozenset(), None))
+                part = re.sub(r"[ \t\f\v\u200b]+", " ", part)
+                if at_line_start() or (chars and chars[-1][0] == " "):
+                    part = part.lstrip(" ")
+                if part:
+                    put(part)
+
+    parser = P(convert_charrefs=True)
+    try:
+        parser.feed(src)
+        parser.close()
+    except Exception:  # pragma: no cover - το html.parser σχεδόν ποτέ δεν σκάει
+        return [(re.sub(r"<[^>]+>", "", src).strip(), frozenset(), None)]
+
+    # καθάρισμα: κενά πριν από αλλαγή γραμμής, ≤1 κενή γραμμή, κενά στην αρχή/τέλος
+    s = "".join(ch for ch, _ in chars)
+    keep = [True] * len(s)
+    for m in re.finditer(r" +(?=\n)| +$", s):
+        for j in range(m.start(), m.end()):
+            keep[j] = False
+    chars = [c for c, k in zip(chars, keep) if k]
+    s = "".join(ch for ch, _ in chars)
+    keep = [True] * len(s)
+    for m in re.finditer(r"\n{3,}", s):
+        for j in range(m.start() + 2, m.end()):
+            keep[j] = False
+    for m in re.finditer(r"^\s+|\s+$", s):
+        for j in range(m.start(), m.end()):
+            keep[j] = False
+    chars = [c for c, k in zip(chars, keep) if k]
+
+    runs: list[tuple[str, frozenset, str | None]] = []
+    for ch, (styles, href) in chars:
+        if runs and runs[-1][1] == styles and runs[-1][2] == href:
+            runs[-1] = (runs[-1][0] + ch, styles, href)
+        else:
+            runs.append((ch, styles, href))
+    return runs
+
+
+def description_runs(desc: str) -> list[tuple[str, frozenset, str | None]]:
+    """Περιγραφή → [(κείμενο, {bold, italic, underline, strike}, σύνδεσμος ή None)].
+
+    Απλό κείμενο μένει όπως πριν (μόνο οι πολλές κενές γραμμές γίνονται μία). Αν μοιάζει με
+    HTML (όπως το γράφει το Google Calendar): <li> → «• » (αριθμοί για <ol>, εσοχή για
+    φωλιασμένες λίστες), <br>/<p>/<div> → αλλαγή γραμμής, οντότητες → χαρακτήρες, άγνωστες
+    ετικέτες αφαιρούνται, <b>/<i>/<u> → μορφή, <a> → το κείμενό του (με τον σύνδεσμο)."""
+    desc = str(desc or "").strip()
+    if not desc:
+        return []
+    if not looks_like_html(desc):
+        return [(re.sub(r"\n\s*\n+", "\n\n", desc), frozenset(), None)]
+    return _desc_html_runs(desc)
+
+
+def description_text(desc: str) -> str:
+    """Η περιγραφή ως απλό κείμενο (χωρίς μορφή), όπως θα φανεί στο παράθυρο."""
+    return "".join(t for t, _, _ in description_runs(desc))
+
+
 def event_key(uid: str, start: datetime) -> str:
     if start.tzinfo is None:
         start = start.replace(tzinfo=HELLENIC)
@@ -1239,8 +1411,8 @@ class Overlay:
         # Περιγραφή: ολόκληρη, χωρίς «…». Το παράθυρο μεγαλώνει όσο χρειάζεται (έως ~80%
         # της οθόνης)· πέρα από αυτό γίνεται πιο «συμπαγές» και το κείμενο κυλά μέσα στο
         # πλαίσιο (τροχός ποντικιού / βελάκια / PgUp-PgDn).
-        desc = str(ev.get("description") or "").strip()
-        desc = re.sub(r"\n\s*\n+", "\n\n", desc)
+        runs = description_runs(ev.get("description") or "")
+        desc = "".join(t for t, _, _ in runs)
         BUTTONS = 22 + 64 + 32  # κενό + κουμπιά + κάτω περιθώριο
         PAD = 14
         tw = W - 104 - 14  # πλάτος κειμένου (χώρος για τη μπάρα κύλισης)
@@ -1285,7 +1457,9 @@ class Overlay:
             if title_cut:
                 txtw.insert("end", title + ("\n" if desc else ""), "title")
             if desc:
-                txtw.insert("end", desc)
+                self._insert_runs(txtw, runs, f(14))
+                if looks_like_html(str(ev.get("description") or "")):  # απλό κείμενο: όπως πριν
+                    self._hang_list_items(txtw, f(14))
             txtw.configure(state="disabled")
             txt_item = c.create_window(52, y + PAD, window=txtw, anchor="nw", width=tw, height=box_h)
             self._desc = txtw
@@ -1372,6 +1546,68 @@ class Overlay:
         root.focus_force()
         self._top_job = base.after(4000, self._keep_on_top)
         return root
+
+    LINK_FG = "#6B3E00"
+
+    def _insert_runs(self, txtw, runs, base_font):
+        """Κείμενο με μορφή στο Text: έντονα/πλάγια/υπογράμμιση και σύνδεσμοι που ανοίγουν."""
+        fam, size = base_font[0], base_font[1]
+        base_bold = len(base_font) > 2 and "bold" in str(base_font[2])
+        fonts = {}
+        links = 0
+        for text, styles, href in runs:
+            tags = []
+            if styles or href:
+                key = tuple(sorted(s for s in styles if s in ("bold", "italic", "underline", "strike")))
+                if href and "underline" not in key:
+                    key = tuple(sorted(key + ("underline",)))
+                name = "fmt-" + ("-".join(key) or "plain")
+                if name not in fonts:
+                    spec = [fam, size]
+                    spec.append("bold" if ("bold" in key or base_bold) else "normal")
+                    if "italic" in key:
+                        spec.append("italic")
+                    if "underline" in key:
+                        spec.append("underline")
+                    if "strike" in key:
+                        spec.append("overstrike")
+                    txtw.tag_configure(name, font=tuple(spec))
+                    fonts[name] = True
+                tags.append(name)
+            if href:
+                links += 1
+                ltag = f"link{links}"
+                txtw.tag_configure(ltag, foreground=self.LINK_FG)
+                txtw.tag_bind(ltag, "<Enter>", lambda e: txtw.configure(cursor="hand2"))
+                txtw.tag_bind(ltag, "<Leave>", lambda e: txtw.configure(cursor="arrow"))
+                txtw.tag_bind(ltag, "<Button-1>", lambda e, u=href: self._open_link(u))
+                tags.append(ltag)
+            txtw.insert("end", text, tuple(tags))
+
+    @staticmethod
+    def _hang_list_items(txtw, base_font):
+        """Οι γραμμές λίστας που αναδιπλώνονται ξεκινούν κάτω από το κείμενο, όχι κάτω από την «•»."""
+        import tkinter.font as tkfont
+
+        try:
+            fnt = tkfont.Font(root=txtw, font=base_font)
+        except Exception:
+            return
+        lines = txtw.get("1.0", "end-1c").split("\n")
+        for n, ln in enumerate(lines, 1):
+            m = re.match(r"^( *)(?:[•◦▪]|\d{1,3}\.) ", ln)
+            if not m:
+                continue
+            tag = f"hang{len(m.group(0))}"
+            txtw.tag_configure(tag, lmargin1=0, lmargin2=fnt.measure(m.group(0)))
+            txtw.tag_add(tag, f"{n}.0", f"{n}.end")
+
+    def _open_link(self, url):
+        try:
+            webbrowser.open(url)
+        except Exception as e:
+            log(f"open link: {e!r}")
+        return "break"
 
     def _fit_desc(self, root, c, fit, p, PAD, line, work):
         """Διόρθωση μετά την εμφάνιση: οι γραμματοσειρές των Windows αναδιπλώνουν λίγο
