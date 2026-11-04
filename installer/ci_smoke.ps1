@@ -39,7 +39,7 @@ $ics = @(
 Set-Content -Path (Join-Path $tmp "test.ics") -Value $ics -Encoding ascii -NoNewline
 $server = Start-Process python -ArgumentList "-m", "http.server", "8765", "--bind", "127.0.0.1", "--directory", $tmp -PassThru -WindowStyle Hidden
 Start-Sleep 2
-$cfgJson = '{"store_name":"Smoke","store_id":"smoke","ics_url":"http://127.0.0.1:8765/test.ics","ics_urls":[],"poll_seconds":30,"minutes_before":0,"show_missed_max_minutes":15,"sound":true,"sound_seconds":5}'
+$cfgJson = '{"store_name":"Smoke","store_id":"smoke","ics_url":"http://127.0.0.1:8765/test.ics","ics_urls":[],"poll_seconds":30,"minutes_before":0,"show_missed_max_minutes":15,"sound":true,"sound_seconds":10}'
 
 try {
     # ---- 0) network fallbacks inside the frozen exe (curl_cffi bundled, real HTTP/3 to Google)
@@ -81,10 +81,12 @@ try {
     $env:LOCALAPPDATA = $la1
     Start-Process $exe | Out-Null
     $ok = $false
-    for ($i = 0; $i -lt 45; $i++) { if (Test-Path (Join-Path $d1 "chime.wav")) { $ok = $true; break }; Start-Sleep 1 }
+    # config of an old install (sound true + old default 10 s) -> migrated to the single short beep
+    for ($i = 0; $i -lt 45; $i++) { if (Test-Path (Join-Path $d1 "beep.wav")) { $ok = $true; break }; Start-Sleep 1 }
     Show-Windows; Check-NoCrashDialog
     if (Test-Path (Join-Path $d1 "app.log")) { Get-Content (Join-Path $d1 "app.log") }
-    if (-not $ok) { Fail "popup/sound did not start (no chime.wav in data dir)" }
+    if (-not $ok) { Fail "popup/sound did not start (no beep.wav in data dir)" }
+    if (Test-Path (Join-Path $d1 "chime.wav")) { Fail "old repeating chime played instead of the short beep" }
     Start-Sleep 3
     $log1 = Join-Path $d1 "app.log"
     if ((Test-Path $log1) -and (Select-String -Path $log1 -Pattern "loop:" -Quiet)) { Get-Content $log1; Fail "popup raised an error (see app.log)" }
@@ -92,7 +94,7 @@ try {
     if (-not (Select-String -Path $log1 -Pattern "net: tls=truststore" -Quiet)) { Get-Content $log1; Fail "truststore (Windows certificate store) not active in the exe" }
     if (Select-String -Path $log1 -Pattern "fatal exception|unhandled|tk callback" -Quiet) { Get-Content $log1; Fail "crash/unhandled error logged in app.log" }
     if (-not (Get-Process Ypenthimiseis -ErrorAction SilentlyContinue)) { Fail "exe exited" }
-    Write-Host "OK: event fetched, popup + chime started, data in LOCALAPPDATA"
+    Write-Host "OK: event fetched, popup + short beep (migrated old default), data in LOCALAPPDATA"
     Stop-App
 
     # ---- 2) first run without config: settings window instead of crash
