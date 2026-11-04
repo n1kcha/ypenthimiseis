@@ -8,6 +8,6 @@
   "poll_seconds": 30,
   "minutes_before": 0,
   "show_missed_max_minutes": 15,
-  "sound": true,
-  "sound_seconds": 30
+  "sound_mode": "beep",
+  "sound_seconds": 10
 }

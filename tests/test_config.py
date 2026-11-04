@@ -124,6 +124,7 @@ def test_load_config_with_bom(tmpcfg):
     tmpcfg.write_bytes(b"\xef\xbb\xbf" + json.dumps({"ics_url": "https://x/y.ics"}).encode())
     assert app.config_is_complete(app.read_config_raw())
     assert app.load_config()["sound_seconds"] == 10
+    assert app.load_config()["sound_mode"] == "beep"
 
 
 def test_missing_config_is_incomplete(tmpcfg):
@@ -184,6 +185,14 @@ def test_settings_window_saves(tmpcfg):
         c["add_calendar"]("https://example.com/c.ics", "Κεντρικό πρόγραμμα", True)
         assert c["calendars"][0][0] == "https://example.com/c.ics"  # το κεντρικό πρώτο
         assert len(c["tree"].get_children()) == 2
+        # νέα προεπιλογή: στιγμιαίο μπιπ, χωρίς πεδίο δευτερολέπτων
+        assert c["sound_mode"].get() == "beep"
+        assert c["sound_mode_box"].get() == app.SOUND_MODES["beep"]
+        assert not c["sound_seconds_row"].winfo_ismapped()
+        c["sound_mode_box"].set(app.SOUND_MODES["repeat"])  # όπως επιλογή από τη λίστα
+        assert c["sound_mode"].get() == "repeat"
+        root.update()
+        assert c["sound_seconds_row"].winfo_manager() == "pack"
         c["sound_seconds"].set("7")
         c["store_id"].set(" 12 ")  # μόνο αριθμοί
         c["save"]()
@@ -196,6 +205,7 @@ def test_settings_window_saves(tmpcfg):
     assert cfg["ics_names"] == {"https://example.com/c.ics": "Κεντρικό πρόγραμμα",
                                 "https://example.com/extra.ics": "Παραλαβές"}
     assert cfg["sound_seconds"] == 7
+    assert cfg["sound_mode"] == "repeat" and cfg["sound"] is True
 
 
 @pytest.mark.skipif(not _has_display(), reason="χωρίς tkinter/οθόνη")

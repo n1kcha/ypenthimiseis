@@ -77,6 +77,7 @@ BASE = app_dir()
 CONFIG_PATH = BASE / "config.json"
 STATE_PATH = BASE / "state.json"
 CHIME_PATH = BASE / "chime.wav"
+BEEP_PATH = BASE / "beep.wav"
 LOG_PATH = BASE / "app.log"
 
 
@@ -160,10 +161,55 @@ def ensure_chime_wav(path: Path) -> Path:
     return path
 
 
+BEEP_SECONDS = 0.35
+
+
+def ensure_beep_wav(path: Path) -> Path:
+    """Ένα σύντομο, απαλό «μπιπ» (~0,35 δευτ.), μία φορά — δεν επαναλαμβάνεται."""
+    if path.exists() and path.stat().st_size > 1000:
+        return path
+    sr = 22050
+    n = int(sr * BEEP_SECONDS)
+    amp = 0.30
+    raw = []
+    for i in range(n):
+        t = i / sr
+        attack = min(1.0, t / 0.008)
+        release = min(1.0, (BEEP_SECONDS - t) / 0.06)
+        env = attack * release * math.exp(-3.0 * t)
+        v = amp * env * (math.sin(2 * math.pi * 880.0 * t) + 0.25 * math.sin(2 * math.pi * 1760.0 * t))
+        raw.append(max(-1.0, min(1.0, v)))
+    with wave.open(str(path), "w") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(sr)
+        w.writeframes(b"".join(struct.pack("<h", int(x * 32767)) for x in raw))
+    return path
+
+
 class SoundPlayer:
     def __init__(self):
         self._stop = threading.Event()
         self._thread = None
+
+    def play(self, mode: str, seconds: int = 10):
+        """mode: «beep» (ένα σύντομο μπιπ), «repeat» (κουδούνι για `seconds`), «none»."""
+        if mode == "beep":
+            self.beep()
+        elif mode == "repeat":
+            self.start(seconds)
+
+    def beep(self):
+        self.stop()
+        try:
+            wav = ensure_beep_wav(BEEP_PATH)
+            if sys.platform.startswith("win"):
+                import winsound
+
+                winsound.PlaySound(
+                    str(wav), winsound.SND_FILENAME | winsound.SND_ASYNC | winsound.SND_NODEFAULT)
+        except Exception as e:
+            log(f"beep: {e!r}")
 
     def start(self, seconds: int = 30):
         self.stop()
@@ -581,13 +627,48 @@ CONFIG_DEFAULTS = {
     "sound_seconds": 10,
 }
 
+# Ήχος υπενθύμισης. Μέχρι την 1.0.6 υπήρχαν μόνο sound (ναι/όχι) + sound_seconds (προεπιλογή
+# 10): ένα κουδούνι κάθε ~3 δευτ. που κρατούσε 10 δευτ. Από την 1.0.7 προεπιλογή είναι ένα
+# σύντομο μπιπ. Τα παλιά config χωρίς sound_mode «μεταφέρονται» κατά την ανάγνωση.
+SOUND_MODES = {
+    "beep": "Στιγμιαίο μπιπ (μία φορά)",
+    "none": "Χωρίς ήχο",
+    "repeat": "Κουδούνι που επαναλαμβάνεται",
+}
+SOUND_MODE_DEFAULT = "beep"
+OLD_DEFAULT_SOUND_SECONDS = 10
+
+
+def sound_mode(cfg: dict) -> str:
+    """Ο τρόπος ήχου του config, με μεταφορά των παλιών ρυθμίσεων:
+    - sound_mode αποθηκευμένο → αυτό (ρητή επιλογή στις Ρυθμίσεις)
+    - sound: false → «none» (ο χρήστης είχε κλείσει τον ήχο)
+    - sound_seconds = 10 (η παλιά προεπιλογή) ή χωρίς τιμή → «beep» (η νέα προεπιλογή)
+    - άλλα δευτερόλεπτα (τα είχε αλλάξει ο χρήστης) → «repeat», με τα ίδια δευτερόλεπτα"""
+    cfg = cfg or {}
+    mode = cfg.get("sound_mode")
+    if mode in SOUND_MODES:
+        return mode
+    if "sound" in cfg and not cfg.get("sound"):
+        return "none"
+    sec = cfg.get("sound_seconds")
+    try:
+        if sec is None or str(sec).strip() == "" or int(sec) == OLD_DEFAULT_SOUND_SECONDS:
+            return SOUND_MODE_DEFAULT
+    except (TypeError, ValueError):
+        return SOUND_MODE_DEFAULT
+    return "repeat"
+
 STORE_ID_RE = re.compile(r"^[a-z0-9_-]+$")
 
 
 def apply_defaults(cfg: dict) -> dict:
     cfg = dict(cfg or {})
+    mode = sound_mode(cfg)  # πριν μπουν οι προεπιλογές, για να φαίνεται τι είχε γραφτεί
     for k, v in CONFIG_DEFAULTS.items():
         cfg.setdefault(k, list(v) if isinstance(v, list) else v)
+    cfg["sound_mode"] = mode
+    cfg["sound"] = mode != "none"  # για παλαιότερες εκδόσεις που διαβάζουν μόνο το sound
     return cfg
 
 
@@ -646,14 +727,26 @@ def build_config(values: dict, existing: dict | None = None) -> tuple[dict, list
             errors.append(f"Ο επιπλέον σύνδεσμος πρέπει να ξεκινά με http: {u[:60]}")
             break
 
-    raw_sec = str(values.get("sound_seconds", "") or "").strip() or "10"
+    if values.get("sound_mode") in SOUND_MODES:
+        mode = values["sound_mode"]
+    elif "sound" in values and not values.get("sound"):
+        mode = "none"
+    else:
+        mode = cfg["sound_mode"]
+    raw_sec = str(values.get("sound_seconds", "") or "").strip() or str(OLD_DEFAULT_SOUND_SECONDS)
     try:
         sec = int(raw_sec)
         if not 1 <= sec <= 600:
             raise ValueError
     except ValueError:
-        errors.append("Τα δευτερόλεπτα ήχου πρέπει να είναι ακέραιος από 1 έως 600.")
-        sec = 10
+        if mode == "repeat" or "sound_mode" not in values:
+            errors.append("Τα δευτερόλεπτα ήχου πρέπει να είναι ακέραιος από 1 έως 600.")
+        try:
+            sec = int(cfg.get("sound_seconds"))
+            if not 1 <= sec <= 600:
+                raise ValueError
+        except (TypeError, ValueError):
+            sec = OLD_DEFAULT_SOUND_SECONDS
 
     cfg["store_name"] = name or cfg.get("store_name") or "Κατάστημα"
     cfg["store_id"] = sid
@@ -668,8 +761,8 @@ def build_config(values: dict, existing: dict | None = None) -> tuple[dict, list
         cfg["ics_names"] = names
     else:
         cfg.pop("ics_names", None)
-    if "sound" in values:
-        cfg["sound"] = bool(values.get("sound"))
+    cfg["sound_mode"] = mode
+    cfg["sound"] = mode != "none"
     cfg["sound_seconds"] = sec
     return cfg, errors
 
@@ -1668,8 +1761,13 @@ class Overlay:
 
     def show(self, ev: dict, position: tuple[int, int] | None = None) -> None:
         self.build(ev, position)
-        if self.engine.cfg.get("sound"):
-            self._sound.start(int(self.engine.cfg.get("sound_seconds") or 30))
+        mode = sound_mode(self.engine.cfg)
+        if mode != "none":
+            try:
+                secs = int(self.engine.cfg.get("sound_seconds") or OLD_DEFAULT_SOUND_SECONDS)
+            except (TypeError, ValueError):
+                secs = OLD_DEFAULT_SOUND_SECONDS
+            self._sound.play(mode, secs)
         self.base.mainloop()  # επιστρέφει με base.quit() όταν κλείσει η υπενθύμιση
         self._sound.stop()
         self._finish_pending()
@@ -2294,11 +2392,36 @@ def run_settings_window(first_run: bool = False, on_ready=None) -> bool:
     srow = ttk.Frame(body)
     srow.grid(row=r, column=0, columnspan=2, sticky="w")
     r += 1
-    v_sound = tk.BooleanVar(value=bool(existing.get("sound", True)))
-    ttk.Checkbutton(srow, text="Ήχος ειδοποίησης για", variable=v_sound).pack(side="left")
-    v_sec = tk.StringVar(value=str(existing.get("sound_seconds", 10)))
-    ttk.Spinbox(srow, from_=1, to=600, textvariable=v_sec, width=5, font=f(11)).pack(side="left", padx=6)
-    ttk.Label(srow, text="δευτερόλεπτα").pack(side="left")
+    v_mode = tk.StringVar(value=existing.get("sound_mode") or SOUND_MODE_DEFAULT)
+    v_mode_label = tk.StringVar(value=SOUND_MODES[v_mode.get()])
+    ttk.Label(srow, text="Ήχος όταν βγαίνει υπενθύμιση:").pack(side="left")
+    mode_box = ttk.Combobox(srow, textvariable=v_mode_label, values=list(SOUND_MODES.values()),
+                            state="readonly", width=28, font=f(11))
+    mode_box.pack(side="left", padx=6)
+    v_sec = tk.StringVar(value=str(existing.get("sound_seconds", OLD_DEFAULT_SOUND_SECONDS)))
+    sec_row = ttk.Frame(srow)
+    ttk.Label(sec_row, text="για").pack(side="left")
+    ttk.Spinbox(sec_row, from_=1, to=600, textvariable=v_sec, width=5, font=f(11)).pack(side="left", padx=6)
+    ttk.Label(sec_row, text="δευτ.").pack(side="left")
+
+    def mode_changed(*_):
+        code = next((k for k, v in SOUND_MODES.items() if v == v_mode_label.get()), SOUND_MODE_DEFAULT)
+        if v_mode.get() != code:
+            v_mode.set(code)
+        if code == "repeat":
+            sec_row.pack(side="left")
+        else:
+            sec_row.pack_forget()
+
+    def mode_code_changed(*_):
+        label = SOUND_MODES.get(v_mode.get(), SOUND_MODES[SOUND_MODE_DEFAULT])
+        if v_mode_label.get() != label:
+            v_mode_label.set(label)
+        mode_changed()
+
+    v_mode_label.trace_add("write", mode_changed)
+    v_mode.trace_add("write", mode_code_changed)
+    mode_changed()
 
     status = tk.Label(body, text="", font=f(10, "semi"), fg=ERR_FG, bg="#FFFFFF",
                       wraplength=540, justify="left", anchor="w")
@@ -2308,7 +2431,7 @@ def run_settings_window(first_run: bool = False, on_ready=None) -> bool:
         vals = {
             "store_name": v_name.get(),
             "store_id": v_id.get(),
-            "sound": v_sound.get(),
+            "sound_mode": v_mode.get(),
             "sound_seconds": v_sec.get(),
         }
         vals.update(calendar_fields(cals))
@@ -2343,7 +2466,8 @@ def run_settings_window(first_run: bool = False, on_ready=None) -> bool:
     root.focus_force()
     if on_ready:
         controls = {
-            "store_name": v_name, "store_id": v_id, "sound": v_sound, "sound_seconds": v_sec,
+            "store_name": v_name, "store_id": v_id, "sound_mode": v_mode, "sound_mode_box": mode_box,
+            "sound_seconds": v_sec, "sound_seconds_row": sec_row,
             "status": status, "version": version_label, "save": on_save, "cancel": root.destroy, "tree": tree,
             "calendars": cals, "add_calendar": lambda u, n="", c=False: apply_calendar(
                 (clean_ics_url(u), n, c)),

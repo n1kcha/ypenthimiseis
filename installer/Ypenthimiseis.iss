@@ -149,8 +149,6 @@ begin
   StorePage.Add('Όνομα καταστήματος:', False);
   StorePage.Add('ID καταστήματος (λατινικά γράμματα ή/και αριθμοί, π.χ. peristeri ή 12):', False);
   StorePage.Add('Κεντρικός σύνδεσμος ICS (μυστική διεύθυνση iCal, ξεκινά με https://):', False);
-  StorePage.Add('Δευτερόλεπτα ήχου ειδοποίησης:', False);
-  StorePage.Values[3] := '10';
 
   ExtraPage := CreateCustomPage(StorePage.ID,
     'Επιπλέον ημερολόγια (προαιρετικό)',
@@ -174,7 +172,7 @@ end;
 
 function NextButtonClick(CurPageID: Integer): Boolean;
 var
-  Sec, I: Integer;
+  I: Integer;
 begin
   Result := True;
   if CurPageID = StorePage.ID then
@@ -196,15 +194,6 @@ begin
     begin
       MsgBox('Ο κεντρικός σύνδεσμος ICS πρέπει να ξεκινά με http:// ή https://', mbError, MB_OK);
       Result := False;
-    end
-    else
-    begin
-      Sec := StrToIntDef(Trim(StorePage.Values[3]), -1);
-      if (Sec < 1) or (Sec > 600) then
-      begin
-        MsgBox('Τα δευτερόλεπτα ήχου πρέπει να είναι ακέραιος από 1 έως 600.', mbError, MB_OK);
-        Result := False;
-      end;
     end;
   end
   else if CurPageID = ExtraPage.ID then
@@ -223,7 +212,7 @@ procedure WriteConfig;
 var
   Lines: TArrayOfString;
   Extras: String;
-  I, N, Sec: Integer;
+  I, N: Integer;
   U: String;
 begin
   Extras := '';
@@ -239,9 +228,8 @@ begin
       N := N + 1;
     end;
   end;
-  Sec := StrToIntDef(Trim(StorePage.Values[3]), 10);
 
-  SetArrayLength(Lines, 14);
+  SetArrayLength(Lines, 15);
   Lines[0] := '{';
   Lines[1] := '  "store_name": "' + JsonEsc(StorePage.Values[0]) + '",';
   Lines[2] := '  "store_id": "' + JsonEsc(StorePage.Values[1]) + '",';
@@ -262,9 +250,11 @@ begin
   Lines[8] := '  "minutes_before": 0,';
   Lines[9] := '  "show_missed_max_minutes": 15,';
   Lines[10] := '  "sound": true,';
-  Lines[11] := '  "sound_seconds": ' + IntToStr(Sec);
-  Lines[12] := '}';
-  Lines[13] := '';
+  { ήχος: ένα σύντομο μπιπ (αλλάζει από τις Ρυθμίσεις) }
+  Lines[11] := '  "sound_mode": "beep",';
+  Lines[12] := '  "sound_seconds": 10';
+  Lines[13] := '}';
+  Lines[14] := '';
   ForceDirectories(DataDir);
   if not SaveStringsToUTF8File(ConfigPath, Lines, False) then
     MsgBox('Δεν γράφτηκε το config.json. Ανοίξτε τις Ρυθμίσεις από το εικονίδιο της εφαρμογής.', mbError, MB_OK);
